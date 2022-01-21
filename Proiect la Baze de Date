@@ -1,0 +1,126 @@
+Se considera o aplicatie pentru evidenta cheltuielilor unei firme, care efectueaza plati in valuta(registru de casa). Baza de date Oracle contine urmatoarele informatii:
+- curs valutar: data, rata de schimb
+- parteneri: nume, CUI, Adresa
+- tranzactii: data efectuarii, CUI, suma in valuta, suma in lei
+- bilant zilnic: data, sold initial, total intrari, total iesiri, sold final.
+Stiind ca rata de schimb este cuprinsa intre 1.00 si 4.00, numele nu depaseste 10 caractere,
+CUI are exact 6 caractere, suma este negativa daca se plateste partenerului si pozitiva daca se
+incaseaza de la partener, si ca soldul initial a fost 0, se cere:
+
+1. Să se realizeze proiectarea bazei de date aferente (structura de tabele, structura de
+coloane a fiecărei tabele, constrângeri).
+2. Sa se scrie comenzile SQL pentru tabelele proiectate la punctul anterior.
+1)+2)
+create table curs(data date PRIMARY KEY,rata number(3,2)  CHECK( rata BETWEEN 1.00 and 4.00) );
+create table parteneri(nume varchar(10),CUI char(6) CHECK(length(CUI)=6) PRIMARY KEY , adresa varchar(50) );
+create table tranzactii(dataef date default NULL, CUI char(6) CHECK(length(CUI)=6) REFERENCES parteneri(CUI), sumav number(8,2),sumal number(8,2) );
+create table bilant(data date unique,soldi number(8) DEFAULT 0,tin number(8),tout number(8),soldf number(8) );
+select sysdate from dual;
+alter session set nls_date_format='dd-mm-yyyy';
+set autocommit on;
+3. Să se scrie comenzile SQL pentru popularea bazei de date cu 5 tranzactii efectuate
+considerand 3 parteneri, in 2 zile consecutive.
+insert into curs values('18.06.2005',3);
+insert into curs values('16.05.2006',2.5);
+insert into curs values('17.05.2006',3.5);
+insert into curs values('18.05.2006',4);
+select * from curs;
+insert into parteneri  values('A','111111','Timisoara');
+insert into parteneri  values('B','222222','Arad');
+insert into parteneri  values('C','333333','Cluj');
+insert into parteneri  values('D','444444','Hunedoara');
+select * from parteneri;
+insert into tranzactii values('18.06.2005','444444',20,60);
+insert into tranzactii values('16.05.2006','111111',10,35);
+insert into tranzactii values('16.05.2006','333333',-20,-70);
+insert into tranzactii values('16.05.2006','222222',-10,-20);
+insert into tranzactii values('17.05.2006','111111',-5,-15);
+insert into tranzactii values('17.05.2006','222222',15,45);
+insert into tranzactii values('17.05.2006','333333',30,90);
+insert into tranzactii values('18.05.2006','444444',-5,-15);
+select * from tranzactii;
+insert into bilant values('16.05.2006',0,10,-20,-10);
+insert into bilant values('17.05.2006',0,45,-5,30);
+select * from bilant;
+4. Să se implementeze un mecanism care sa nu permita modificarea cursului valutar pentru zilelele cand sunt efectuate tranzactii, sa se argumenteze alegerea facuta.
+
+create or replace trigger trig1
+before update or delete on curs
+for each row
+declare
+nr int;
+begin
+ select count(sumav) into nr from tranzactii where dataef=:old.data;
+ if nr<>0 then 
+  raise_application_error(-20000,'Rata de schimb nu poate fi modificata/stearsa');
+ end if;
+end;
+/
+
+update curs set rata=3.75 where data='17.05.2006';
+delete from curs where data='16.05.2006';
+
+5. Sa se scrie o procedura care sa genereze un raport care sa cuprinda numele,CUI, intrari, iesiri pentru partenerul specificat ca si argument prin CUI.
+set serveroutput on;
+create or replace procedure proc1(c varchar)
+as 
+a varchar(10);
+sin number(8);
+sout number(8);
+begin
+select nume into a from parteneri where cui=c;
+select abs(sum(sumav)) into sin from tranzactii where cui=c and sumav<0;
+select sum(sumav) into sout from tranzactii where cui=c and sumav>=0;
+dbms_output.put_line('  NUME:  '||a|| '  CUI:  '||c|| '  INTRARI:  '||sin|| '  IESIRI:  '||sout);
+end;
+/
+exec proc1('333333');
+
+6. Sa se genereze un raport detaliat care sa cuprinda pentru fiecare partener: numele, CUI-ul, si toate tranzactiile efectuate 
+(data tranzactie, tip tranzactie (intrare sau iesire), suma in valuta, suma in lei), ordonat dupa nume si data efectuarii tranzactiilor.
+select A.nume,A.CUI,B.dataef,B.sumav,B.sumal,'Intrare' as Tip from parteneri A,tranzactii B where A.CUI=B.CUI and sumav<0 group by A.nume,A.CUI,B.dataef,B.sumav,B.sumal union 
+select A.nume,A.CUI,B.dataef,B.sumav,B.sumal,'Iesire' as Tip from parteneri A,tranzactii B where A.CUI=B.CUI and sumav>0 group by A.nume,A.CUI,B.dataef,B.sumav,B.sumal 
+order by nume,dataef;
+
+7. Sa se scrie un trigger care la adaugarea unei tranzactii sa calculeze automat suma in lei, iar daca cursul nu este specificat, sa semnaleze eroare si sa nu permita
+adaugarea tranzactiei.
+create or replace trigger trig7
+before insert on tranzactii
+for each row
+declare
+x number(3);
+y number(3,2);
+begin
+select count(data) into x from curs where data=:new.dataef;
+select rata into y from curs where data=:new.dataef;
+if x <> 0 then
+  :new.sumal:=:new.sumav*y; 
+else
+   raise_application_error(-20000,'nu s-a realizat inseararea');
+end if;
+end;
+/
+insert into tranzactii values('17.05.2006','444444’,60,NULL);
+select * from tranzactii;
+insert into tranzactii values('05.05.2006','444444’,60,NULL);
+
+8. Sa se scrie o functie care sa primeasca ca si parametru CUI si sa returneze rulajul efectuat de acel partener (suma dintre intrari si iesiri luate fara semn).
+create or replace function fc8(c char)
+return number as
+x number;
+begin
+select sum(abs(sumav)) into x from tranzactii where cui=c;
+return x;
+end;
+/
+select fc8('222222') from dual;
+
+9. Sa se afiseze partenerii care doar au incasat si care nu au facut plati intr-un an intreg, precizand: nume, CUI, suma totala incasata.
+
+select A.nume,A.CUI,sum(sumav) as suma_incasata from parteneri A,tranzactii B where A.CUI=B.CUI and months_between(dataef,'01.01.2007')<=12 and sumav>=0 group by A.CUI,A.nume;
+
+10. Sa se afiseze partenerul care are cele mai multe tranzactii, precizand numele, CUI-ul, numar de tranzactii, rata lui de rentabilitate (cat la suta este profit din 
+suma totala a tranzactiilor).
+select A.nume, A.cui, (select max(count(B.cui)) from tranzactii B group by B.cui) as nr_tranzactii,(select round((sum(sumav))/sum(abs(sumav))*100,2) from tranzactii B 
+where A.cui=B.cui) as rata_rentabilitate from parteneri A, tranzactii B where A.cui=B.cui group by A.nume, A.cui having count(B.cui)=(select max(count(B.cui)) 
+from tranzactii B group by B.cui);
